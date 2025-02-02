@@ -1,17 +1,3 @@
-# PermuteNM
-## Description
-Python implementation of Geometric Nelder-Mead Algorithm for the permutation representation.
-Based on the paper _Geometric Nelder-Mead Algorithm for the permutation representation_.
-
-## Installation
-```bash
-git clone https://github.com/gkoundry/PermuteNM.git
-cd PermuteNM
-pip install -e .
-```
-
-## Usage
-```python
 from random import shuffle
 from permutenm import GNMPermutationOptimizer
 
@@ -45,4 +31,3 @@ for _ in range(N + 1):
 result = opt.minimize(initial_pop)
 print(f"Best permutation: {' '.join(map(str, result.best_member))}")
 print(f"Best score: {result.best_score}")
-```

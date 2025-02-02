@@ -1,9 +1,12 @@
 """ Implementation of Geometric Nelder-Mead Algorithm for Permutations """
 
+import logging
 from collections import Counter
 from dataclasses import dataclass
 from random import choice, random
 from typing import Any, Callable, List, Sequence, Tuple, TypeVar
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -15,22 +18,45 @@ class FinalResult:
 
 
 class GNMPermutationOptimizer:
+    """Geometric Nelder-Mead algorithm for optimizing permutations,
+    Parameters
+    ==========
+    objective: callable
+        the objective function to be minimized.  Should accept a permutation
+        and return the score for that permutation.
+    alpha: float (0,inf)
+        reflection length of ray from worst point through center of mass
+    gamma: float (0,inf)
+        length of extension ray through new best point
+    rho: float (0,1)
+        amount to contract simplex if new point is not better than best point
+    sigma: float (0,1)
+        amount to contract simplex if new point is worse than worst point
+
+    References
+    ==========
+    A. Moraglio and J. Togelius,
+    "Geometric Nelder-Mead Algorithm for the permutation representation,"
+    IEEE Congress on Evolutionary Computation, Barcelona, Spain, 2010,
+    pp. 1-8, doi: 10.1109/CEC.2010.5586321.
+    """
+
     def __init__(
         self,
         objective: Callable[[Sequence[Any]], float],
         alpha: float = 1,
-        phi: float = 0.5,
         gamma: float = 2,
+        rho: float = 0.5,
         sigma: float = 0.5,
-        verbose: bool = False
+        verbose: bool = False,
     ):
         self.objective = objective
         self.num_elements = 0
         self.alpha = alpha
-        self.phi = phi
+        self.rho = rho
         self.gamma = gamma
         self.sigma = sigma
-        self.verbose = verbose
+        logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO)
 
     def _center_of_mass(
         self, population_member: Sequence[Tuple[float, Sequence[T]]]
@@ -76,7 +102,7 @@ class GNMPermutationOptimizer:
     ) -> Sequence[Any]:
         sdab = self._swap_distance(pa, pb)
         sdbc = sdab * wab / wbc
-        p = sdbc / (self.num_elements - sdab)
+        p = sdbc / max(1, self.num_elements - 1 - sdab)
         pc = list(pb)
         for i in range(self.num_elements):
             if pc[i] == pa[i] and random() < p:
@@ -87,7 +113,10 @@ class GNMPermutationOptimizer:
         return pc
 
     def _convex_combination(
-        self, pa: Sequence[Any], pb: Sequence[Any], wa: float, wb: float
+        self,
+        pa: Sequence[Any],
+        pb: Sequence[Any],
+        wa: float,
     ) -> Sequence[Any]:
         pa = list(pa)
         pb = list(pb)
@@ -106,7 +135,50 @@ class GNMPermutationOptimizer:
                     pa[j] = tmp
         return pa
 
-    def minimize(self, initial_population: Sequence[Sequence[Any]]) -> FinalResult:
+    def _shrink_population(self, pop: Sequence[Sequence[Any]]) -> None:
+        logger.debug("Shrink")
+        for i in range(self.num_elements, 0, -1):
+            c0 = self._convex_combination(pop[0][1], pop[i][1], 1 - self.sigma)
+            scc0 = self.objective(c0)
+            pop[i] = (scc0, c0)
+
+    def _contract_population(
+        self,
+        pop: Sequence[Sequence[T]],
+        ray: Sequence[T],
+        center_of_mass: Sequence[T],
+        ray_score: float,
+    ) -> bool:
+        logger.debug("Contract")
+        do_shrink = True
+        if ray_score >= pop[-2][0]:
+            c = self._convex_combination(ray, center_of_mass, self.rho)
+            scc = self.objective(c)
+            if scc < ray_score:
+                pop[-1] = (scc, c)
+                do_shrink = False
+        return do_shrink
+
+    def minimize(
+        self, initial_population: Sequence[Sequence[Any]], max_iter: int = 1000
+    ) -> FinalResult:
+        """Find minimum value of object function staring from an initial
+        population of permutations.
+
+        Patameters
+        ==========
+        initial_population: Sequence[Sequence[Any]]
+            array-like containing N+1 permutations, where N size the size of each permutation
+        max_iter: int
+            maximum number of iterations
+
+        Returns
+        =======
+        final_result: FinalResult
+            object with attributes `best_score` containing the lowest score found an
+            `best_member` containing the permutation with the lowest score
+        """
+
         assert (
             len(set(len(p) for p in initial_population)) == 1
         ), "Population members must all have the same size."
@@ -119,48 +191,41 @@ class GNMPermutationOptimizer:
             sc = self.objective(p)
             pop.append((sc, p))
 
-        while True:
+        for it in range(max_iter):
             pop = sorted(pop)
             if pop[0][0] == pop[-1][0]:
                 return FinalResult(best_score=pop[0][0], best_member=pop[0][1])
-            if self.verbose:
-                for p in pop:
-                    print(f"POP {p[0]:.1f} {' '.join(p[1])}")
-            m = self._center_of_mass(pop[:-1])
-            r = self._extension_ray(
-                pop[-1][1], m, self.alpha / (1 + self.alpha), 1 / (1 + self.alpha)
+            logger.debug("Iteration %d. Current population:", it)
+            for p in pop:
+                logger.debug("  %f %s", p[0], p[1])
+            center_of_mass = self._center_of_mass(pop[:-1])
+            ray = self._extension_ray(
+                pop[-1][1],
+                center_of_mass,
+                self.alpha / (1 + self.alpha),
+                1 / (1 + self.alpha),
             )
-            scr = self.objective(r)
-            if self.verbose:
-                print(f"RAY {scr:.1f} {' '.join(r)}")
-            if pop[0][0] < scr < pop[-1][0]:
-                pop[-1] = (scr, r)
+            ray_score = self.objective(ray)
+            logger.debug("Ray: %f %s", ray_score, ray)
+            if pop[0][0] < ray_score < pop[-1][0]:
+                pop[-1] = (ray_score, ray)
             else:
-                if scr <= pop[0][0]:
-                    e = self._extension_ray(
-                        m, r, 1 / self.gamma, (self.gamma - 1) / self.gamma
+                if ray_score <= pop[0][0]:
+                    extension_ray = self._extension_ray(
+                        center_of_mass,
+                        ray,
+                        1 / self.gamma,
+                        (self.gamma - 1) / self.gamma,
                     )
-                    sce = self.objective(e)
-                    if self.verbose:
-                        print(f"RAY2 {sce:.1f} {' '.join(e)}")
-                    if sce < scr:
-                        pop[-1] = (sce, e)
+                    extension_score = self.objective(extension_ray)
+                    logger.debug("Extension ray %f %s", extension_score, extension_ray)
+                    if extension_score < ray_score:
+                        pop[-1] = (extension_score, extension_ray)
                     else:
-                        pop[-1] = (scr, r)
+                        pop[-1] = (ray_score, ray)
                 else:
-                    if self.verbose:
-                        print("CX")
-                    b = True
-                    if scr >= pop[-2][0]:
-                        c = self._convex_combination(r, m, self.phi, 1 - self.phi)
-                        scc = self.objective(c)
-                        if scc < scr:
-                            pop[-1] = (scc, c)
-                            b = False
-                    if b:
-                        for i in range(self.num_elements, 0, -1):
-                            c0 = self._convex_combination(
-                                pop[0][1], pop[i][1], 1 - self.sigma, self.sigma
-                            )
-                            scc0 = self.objective(c0)
-                            pop[i] = (scc0, c0)
+                    do_shrink = self._contract_population(
+                        pop, ray, center_of_mass, ray_score
+                    )
+                    if do_shrink:
+                        self._shrink_population(pop)
